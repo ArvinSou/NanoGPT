@@ -200,29 +200,94 @@ model = GPTLanguageModel()
 m = model.to(device)
 print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
 
-# create a PyTorch optimizer:
-#optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
+def f():
+    # create a PyTorch optimizer:
+    #optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
 
-for iter in range(max_iters):
+    for iter in range(max_iters):
 
-    if iter % eval_interval == 0 or iter == max_iters - 1:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss()
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    # sample a batch of data:
-    xb, yb = get_batch('train')
+        # sample a batch of data:
+        xb, yb = get_batch('train')
 
-    # evaluate the loss:
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+        # evaluate the loss:
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-# save the model parameters:
-model_save_path = 'shakespeare_char_model.pth'
-torch.save(m.state_dict(), model_save_path)
+    # save the model parameters:
+    model_save_path = 'shakespeare_char_model.pth'
+    torch.save(m.state_dict(), model_save_path)
 
+#f()
 # generate from the model
 #context = torch.zeros((1, 1), dtype=torch.long, device=device)
 #print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+MODEL_PATH = "shakespeare_char_model_T4.pth"
+TEMPERATURE = 0.85
+TOP_K = 40
+TOP_P = 0.92
+MAX_NEW_TOKENS = 10000
+
+state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+model.load_state_dict(state_dict)
+model.eval()
+print("Model Loaded Successfully On ", device)
+
+@torch.no_grad()
+def generate(idx: str, max_new_tokens=200, temperature=0.8, top_k=None, top_p=None):
+    idx = encode(idx)
+    idx = torch.tensor(idx, dtype=torch.long, device=device)
+    idx = idx.unsqueeze(0) # add the batch dimension
+
+    for _ in range(max_new_tokens):
+        idx_cond = idx[:, -block_size:]
+        # forward pass:
+        logits, _ = model(idx_cond)
+        logits = logits[:, -1, :]
+        
+        if temperature != 1.0:
+            logits = logits / temperature
+
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[..., [-1]]] = -float('Inf')
+
+        if top_p is not None and top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+            indices_to_remove = sorted_indices[sorted_indices_to_remove]
+            logits[:, indices_to_remove]
+
+
+        # sample
+        probs = F.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        idx = torch.cat((idx, next_token), dim=1)
+    #return decode(idx[0].tolist())
+    return idx[0].tolist()
+
+prompt = " "
+print("\nPrompt: ", prompt)
+
+generated = generate(
+    prompt,
+    max_new_tokens=MAX_NEW_TOKENS,
+    temperature=TEMPERATURE,
+    top_k=TOP_K,
+    top_p=TOP_P
+)
+
+generated = decode(generated)
+
+print("\nGenerated:\n" + "="*50)
+print(generated)
+print("="*50)
